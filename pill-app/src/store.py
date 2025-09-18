@@ -60,6 +60,37 @@ def init_db() -> None:
             );
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS comparisons (
+                id TEXT PRIMARY KEY,
+                bag_id_a TEXT NOT NULL,
+                bag_id_b TEXT NOT NULL,
+                score_color REAL NOT NULL,
+                score_shape REAL NOT NULL,
+                score_count REAL NOT NULL,
+                score_size REAL NOT NULL,
+                s_total REAL NOT NULL,
+                decision TEXT NOT NULL,
+                preview_path TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (bag_id_a) REFERENCES bags(id) ON DELETE CASCADE,
+                FOREIGN KEY (bag_id_b) REFERENCES bags(id) ON DELETE CASCADE
+            );
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS feedback (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                comparison_id TEXT NOT NULL,
+                is_correct INTEGER NOT NULL,
+                note TEXT,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (comparison_id) REFERENCES comparisons(id) ON DELETE CASCADE
+            );
+            """
+        )
         conn.commit()
     finally:
         conn.close()
@@ -219,3 +250,165 @@ def list_detections(image_id: str) -> List[Dict[str, object]]:
         return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
+
+
+def create_comparison(
+    *,
+    bag_id_a: str,
+    bag_id_b: str,
+    score_color: float,
+    score_shape: float,
+    score_count: float,
+    score_size: float,
+    s_total: float,
+    decision: str,
+    preview_path: Optional[str] = None,
+    comparison_id: Optional[str] = None,
+) -> Dict[str, object]:
+    """Store a comparison result and return the created record."""
+
+    record_id = comparison_id or str(uuid.uuid4())
+    now = datetime.utcnow().isoformat()
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO comparisons (
+                id,
+                bag_id_a,
+                bag_id_b,
+                score_color,
+                score_shape,
+                score_count,
+                score_size,
+                s_total,
+                decision,
+                preview_path,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record_id,
+                bag_id_a,
+                bag_id_b,
+                float(score_color),
+                float(score_shape),
+                float(score_count),
+                float(score_size),
+                float(s_total),
+                decision,
+                preview_path,
+                now,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {
+        "id": record_id,
+        "bag_id_a": bag_id_a,
+        "bag_id_b": bag_id_b,
+        "score_color": float(score_color),
+        "score_shape": float(score_shape),
+        "score_count": float(score_count),
+        "score_size": float(score_size),
+        "s_total": float(s_total),
+        "decision": decision,
+        "preview_path": preview_path,
+        "created_at": now,
+    }
+
+
+def get_comparison(comparison_id: str) -> Optional[Dict[str, object]]:
+    """Fetch a stored comparison by its identifier."""
+
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            SELECT
+                id,
+                bag_id_a,
+                bag_id_b,
+                score_color,
+                score_shape,
+                score_count,
+                score_size,
+                s_total,
+                decision,
+                preview_path,
+                created_at
+            FROM comparisons
+            WHERE id = ?
+            """,
+            (comparison_id,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+        return dict(row)
+    finally:
+        conn.close()
+
+
+def update_comparison_total(comparison_id: str, s_total: float) -> None:
+    """Persist an updated total score for a comparison."""
+
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE comparisons SET s_total = ? WHERE id = ?",
+            (float(s_total), comparison_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def list_feedback(comparison_id: str) -> List[Dict[str, object]]:
+    """Return feedback entries for a comparison ordered by creation time."""
+
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            SELECT id, comparison_id, is_correct, note, created_at
+            FROM feedback
+            WHERE comparison_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (comparison_id,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def create_feedback(
+    *, comparison_id: str, is_correct: int, note: Optional[str] = None
+) -> Dict[str, object]:
+    """Insert a feedback entry linked to a comparison."""
+
+    now = datetime.utcnow().isoformat()
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO feedback (comparison_id, is_correct, note, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (comparison_id, int(is_correct), note, now),
+        )
+        feedback_id = cursor.lastrowid
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "id": int(feedback_id),
+        "comparison_id": comparison_id,
+        "is_correct": int(is_correct),
+        "note": note,
+        "created_at": now,
+    }

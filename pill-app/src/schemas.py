@@ -52,3 +52,49 @@ class ImageDetections(BaseModel):
     visualization_path: str
     unrecognized_regions: List[RegionFlag] = Field(default_factory=list)
     message: Optional[str] = None
+
+
+class ParameterSnapshot(BaseModel):
+    w: float
+    tau: float
+
+
+class ComparisonCreate(BaseModel):
+    bag_id_a: str
+    bag_id_b: str
+    score_color: float
+    score_shape: float
+    score_count: float
+    score_size: float
+    decision: str
+    preview_path: Optional[str] = None
+
+
+class Comparison(BaseModel):
+    id: str
+    bag_id_a: str
+    bag_id_b: str
+    score_color: float
+    score_shape: float
+    score_count: float
+    score_size: float
+    s_total: float
+    decision: str
+    preview_path: Optional[str] = None
+    created_at: str
+
+
+class FeedbackCreate(BaseModel):
+    comparison_id: str
+    is_correct: int = Field(ge=0, le=1)
+    note: Optional[str] = None
+
+
+class Feedback(BaseModel):
+    id: int
+    comparison_id: str
+    is_correct: int
+    note: Optional[str] = None
+    created_at: str
+    updated_s_total: float
+    parameters: ParameterSnapshot
