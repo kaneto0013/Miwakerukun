@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw
 
-from src import feedback, store
+from src import feedback, ocr, signature, store
 from src.api import app
 
 client = TestClient(app)
@@ -153,10 +153,65 @@ def test_compare_endpoint_records_comparison() -> None:
     assert data["preview_path"] == "data/outputs/sample.png"
     assert data["s_total"] == expected_total
     assert data["score_embed"] == pytest.approx(0.0, abs=1e-6)
+    assert data["score_ocr"] == pytest.approx(0.0, abs=1e-6)
 
     stored = store.get_comparison(data["id"])
     assert stored is not None
     assert stored["s_total"] == pytest.approx(data["s_total"], rel=1e-6)
+    assert stored["score_ocr"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_compare_endpoint_triggers_ocr(monkeypatch: pytest.MonkeyPatch) -> None:
+    bag_a = client.post("/api/bags", json={"label": "oa"})
+    bag_b = client.post("/api/bags", json={"label": "ob"})
+    bag_a.raise_for_status()
+    bag_b.raise_for_status()
+
+    monkeypatch.setattr(signature, "boe_similarity", lambda *_: 0.93)
+    calls: dict[str, int] = {"count": 0}
+
+    def fake_score_samples(*args, **kwargs) -> float:
+        calls["count"] += 1
+        return 0.4
+
+    monkeypatch.setattr(ocr, "score_samples", fake_score_samples)
+
+    payload = {
+        "bag_id_a": bag_a.json()["id"],
+        "bag_id_b": bag_b.json()["id"],
+        "score_color": 0.9,
+        "score_shape": 0.9,
+        "score_count": 0.85,
+        "score_size": 0.85,
+        "decision": "bag_a",
+    }
+
+    response = client.post("/api/compare", json=payload)
+    response.raise_for_status()
+    data = response.json()
+
+    params = feedback.get_state()
+    expected_initial = params.compute_total(
+        sim_embed=0.93,
+        sim_color=payload["score_color"],
+        sim_count=payload["score_count"],
+        sim_size=payload["score_size"],
+        sim_text=0.0,
+    )
+    assert ocr.is_score_ambiguous(expected_initial)
+
+    expected_total = params.compute_total(
+        sim_embed=0.93,
+        sim_color=payload["score_color"],
+        sim_count=payload["score_count"],
+        sim_size=payload["score_size"],
+        sim_text=0.4,
+    )
+
+    assert calls["count"] == 1
+    assert data["score_ocr"] == pytest.approx(0.4, abs=1e-6)
+    assert data["s_total"] == pytest.approx(expected_total, rel=1e-6)
+    assert data["decision"] == "bag_a"
 
 
 def test_feedback_updates_parameters_and_scores() -> None:
