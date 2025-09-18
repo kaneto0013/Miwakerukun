@@ -3,72 +3,97 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Iterable
 
+import numpy as np
+
+from . import match
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class AdaptiveParameters:
-    """Track and adjust scoring parameters using an EMA update."""
+    """Track scoring weights and adjust them using an EMA update."""
 
-    w: float = 1.0
-    tau: float = 0.1
+    weights: list[float] = field(default_factory=lambda: match.DEFAULT_WEIGHTS.tolist())
+    tau: float = match.DEFAULT_THRESHOLD
     decay: float = 0.9
     learning_rate: float = 0.05
-    _grad_w: float = field(default=0.0, init=False, repr=False)
     _grad_tau: float = field(default=0.0, init=False, repr=False)
 
-    def compute_total(self, partial_scores: Iterable[float]) -> float:
-        """Compute a total score using the current adaptive parameters."""
+    def compute_total(
+        self,
+        *,
+        sim_embed: float,
+        sim_color: float,
+        sim_count: float,
+        sim_size: float,
+        sim_text: float = 0.0,
+    ) -> float:
+        """Compute a fused similarity score using the current weights."""
 
-        scores = list(float(score) for score in partial_scores)
-        if not scores:
-            base = 0.0
-        else:
-            base = sum(scores) / len(scores)
-        total = self.w * base + self.tau
+        features = match.compose_features(
+            sim_embed=sim_embed,
+            sim_color=sim_color,
+            sim_count=sim_count,
+            sim_size=sim_size,
+            sim_text=sim_text,
+        )
+        total = match.combine_scores(self.weights, features)
+        offset = (self.tau - match.DEFAULT_THRESHOLD) * 0.25
+        adjusted = float(np.clip(total + offset, 0.0, 1.0))
         logger.info(
-            "Computed s_total=%.6f (base=%.6f, w=%.4f, tau=%.4f)",
+            "Computed s_total=%.6f (base=%.6f, embed=%.4f, color=%.4f, count=%.4f, size=%.4f, text=%.4f, tau=%.4f)",
+            adjusted,
             total,
-            base,
-            self.w,
+            sim_embed,
+            sim_color,
+            sim_count,
+            sim_size,
+            sim_text,
             self.tau,
         )
-        return total
+        return adjusted
 
     def register_feedback(self, is_correct: bool) -> None:
-        """Update the parameters based on user feedback.
-
-        When feedback is correct the update nudges the parameters to become
-        smaller, effectively lowering the total score. Incorrect feedback
-        increases the parameters. Exponential moving averages are used to make
-        consecutive feedback signals more influential, emulating a light-weight
-        AdaDelta-like behaviour.
-        """
+        """Update weights in response to feedback."""
 
         direction = -1.0 if is_correct else 1.0
-        self._grad_w = self.decay * self._grad_w + (1.0 - self.decay) * direction
+        old_weights = self.weights.copy()
+        current = np.asarray(self.weights, dtype=np.float32)
+        primary = float(
+            np.clip(current[0] - direction * self.learning_rate, 0.05, 0.85)
+        )
+        remainder = max(1e-3, 1.0 - primary)
+        tail = current[1:]
+        if tail.sum() <= 0.0:
+            tail = np.ones_like(tail) / max(1, tail.size)
+        tail = tail / tail.sum()
+        tail = np.clip(tail, 1e-3, 1.0)
+        tail = tail / tail.sum()
+        tail *= remainder
+        updated = np.concatenate(([primary], tail))
+        updated = match.normalize_weights(updated)
+        self.weights = updated.tolist()
+
         self._grad_tau = self.decay * self._grad_tau + (1.0 - self.decay) * direction
-        delta_w = self.learning_rate * self._grad_w
-        delta_tau = self.learning_rate * self._grad_tau
-
-        old_w, old_tau = self.w, self.tau
-
-        self.w = max(0.05, self.w + delta_w)
-        self.tau = max(0.0, self.tau + delta_tau)
+        old_tau = self.tau
+        self.tau = float(np.clip(self.tau + self.learning_rate * self._grad_tau, 0.0, 1.0))
 
         logger.info(
-            "Feedback %s -> grad_w=%.6f grad_tau=%.6f; w: %.4f -> %.4f, tau: %.4f -> %.4f",
+            "Feedback %s -> weights: %s -> %s, tau: %.4f -> %.4f",
             "correct" if is_correct else "incorrect",
-            self._grad_w,
-            self._grad_tau,
-            old_w,
-            self.w,
+            [f"{w:.3f}" for w in old_weights],
+            [f"{w:.3f}" for w in self.weights],
             old_tau,
             self.tau,
         )
+
+    @property
+    def w(self) -> float:
+        """Return the primary (embedding) weight for backwards compatibility."""
+
+        return float(self.weights[0])
 
 
 _STATE = AdaptiveParameters()
@@ -85,3 +110,4 @@ def reset_state() -> None:
 
     global _STATE
     _STATE = AdaptiveParameters()
+
