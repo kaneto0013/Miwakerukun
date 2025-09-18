@@ -12,7 +12,7 @@ from fastapi.params import Query
 from fastapi.responses import HTMLResponse
 from PIL import Image, UnidentifiedImageError
 
-from . import detect, embed, feedback, indexer, schemas, store, visualize
+from . import detect, embed, feedback, schemas, signature, store, visualize
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 RAW_DIR = BASE_DIR / "data" / "raw"
@@ -23,9 +23,6 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="pill-app")
-
-EMBED_SCORE_WEIGHT = 0.1
-
 
 @app.get("/health")
 def health_check() -> dict[str, str]:
@@ -158,18 +155,16 @@ def create_comparison(payload: schemas.ComparisonCreate) -> schemas.Comparison:
         raise HTTPException(status_code=404, detail="Bag not found")
 
     params = feedback.get_state()
-    signature_total = params.compute_total(
-        [
-            payload.score_color,
-            payload.score_shape,
-            payload.score_count,
-            payload.score_size,
-        ]
-    )
     samples_a = store.list_samples_for_bag(payload.bag_id_a)
     samples_b = store.list_samples_for_bag(payload.bag_id_b)
-    score_embed = indexer.mean_nearest_similarity(samples_a, samples_b)
-    s_total = signature_total + EMBED_SCORE_WEIGHT * score_embed
+    score_embed = signature.boe_similarity(samples_a, samples_b)
+    s_total = params.compute_total(
+        sim_embed=score_embed,
+        sim_color=float(payload.score_color),
+        sim_count=float(payload.score_count),
+        sim_size=float(payload.score_size),
+        sim_text=0.0,
+    )
 
     record = store.create_comparison(
         bag_id_a=payload.bag_id_a,
@@ -185,11 +180,11 @@ def create_comparison(payload: schemas.ComparisonCreate) -> schemas.Comparison:
     )
 
     logger.info(
-        "Comparison %s stored (s_total=%.6f, score_embed=%.4f, w=%.4f, tau=%.4f)",
+        "Comparison %s stored (s_total=%.6f, score_embed=%.4f, weights=%s, tau=%.4f)",
         record["id"],
         s_total,
         score_embed,
-        params.w,
+        ",".join(f"{w:.2f}" for w in params.weights),
         params.tau,
     )
 
@@ -210,30 +205,29 @@ def submit_feedback(payload: schemas.FeedbackCreate) -> schemas.Feedback:
 
     params = feedback.get_state()
     params.register_feedback(bool(payload.is_correct))
-    signature_total = params.compute_total(
-        [
-            comparison["score_color"],
-            comparison["score_shape"],
-            comparison["score_count"],
-            comparison["score_size"],
-        ]
-    )
     score_embed = float(comparison.get("score_embed") or 0.0)
-    updated_total = signature_total + EMBED_SCORE_WEIGHT * score_embed
+    updated_total = params.compute_total(
+        sim_embed=score_embed,
+        sim_color=float(comparison["score_color"]),
+        sim_count=float(comparison["score_count"]),
+        sim_size=float(comparison["score_size"]),
+        sim_text=0.0,
+    )
     store.update_comparison_total(payload.comparison_id, updated_total)
 
     logger.info(
-        "Feedback %s applied to %s -> s_total %.6f (score_embed=%.4f)",
+        "Feedback %s applied to %s -> s_total %.6f (score_embed=%.4f, weights=%s)",
         feedback_record["id"],
         payload.comparison_id,
         updated_total,
         score_embed,
+        ",".join(f"{w:.2f}" for w in params.weights),
     )
 
     return schemas.Feedback(
         **feedback_record,
         updated_s_total=float(updated_total),
-        parameters=schemas.ParameterSnapshot(w=params.w, tau=params.tau),
+        parameters=schemas.ParameterSnapshot(weights=params.weights, tau=params.tau, w=params.w),
     )
 
 
@@ -290,7 +284,7 @@ def comparison_page(comparison_id: str) -> HTMLResponse:
           <p><strong>ID:</strong> {html.escape(comparison_id)}</p>
           <p><strong>決定:</strong> {html.escape(str(comparison['decision']))}</p>
           <p><strong>現在の総合スコア:</strong> {_fmt(comparison['s_total'])}</p>
-          <p><strong>パラメータ:</strong> w={params.w:.3f}, τ={params.tau:.3f}</p>
+          <p><strong>パラメータ:</strong> weights={[f"{w:.3f}" for w in params.weights]}, τ={params.tau:.3f}</p>
           <table>
             <tbody>
               <tr><th>色スコア</th><td>{_fmt(comparison['score_color'])}</td></tr>
@@ -332,7 +326,9 @@ def comparison_page(comparison_id: str) -> HTMLResponse:
               if (!response.ok) {{
                 statusEl.textContent = data.detail || '送信に失敗しました';
               }} else {{
-                statusEl.textContent = `更新しました: s_total=${{data.updated_s_total.toFixed(3)}} (w=${{data.parameters.w.toFixed(3)}}, τ=${{data.parameters.tau.toFixed(3)}})`;
+                const weights = data.parameters.weights || [];
+                const primary = weights.length ? weights[0].toFixed(3) : '0.000';
+                statusEl.textContent = `更新しました: s_total=${{data.updated_s_total.toFixed(3)}} (w₀=${primary}, τ=${{data.parameters.tau.toFixed(3)}})`;
               }}
             }} catch (err) {{
               statusEl.textContent = '送信に失敗しました';

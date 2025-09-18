@@ -55,8 +55,9 @@ class ImageDetections(BaseModel):
 
 
 class ParameterSnapshot(BaseModel):
-    w: float
+    weights: List[float] = Field(default_factory=list)
     tau: float
+    w: float
 
 
 class ComparisonCreate(BaseModel):

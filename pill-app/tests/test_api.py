@@ -136,7 +136,17 @@ def test_compare_endpoint_records_comparison() -> None:
     assert response.status_code == 200
     data = response.json()
 
-    expected_total = pytest.approx((0.7 + 0.6 + 0.5 + 0.4) / 4 + 0.1, rel=1e-3)
+    params = feedback.get_state()
+    expected_total = pytest.approx(
+        params.compute_total(
+            sim_embed=0.0,
+            sim_color=payload["score_color"],
+            sim_count=payload["score_count"],
+            sim_size=payload["score_size"],
+            sim_text=0.0,
+        ),
+        rel=1e-3,
+    )
     assert data["bag_id_a"] == payload["bag_id_a"]
     assert data["bag_id_b"] == payload["bag_id_b"]
     assert data["decision"] == "bag_a"
@@ -169,6 +179,8 @@ def test_feedback_updates_parameters_and_scores() -> None:
     comparison.raise_for_status()
     comp_data = comparison.json()
 
+    params = feedback.get_state()
+    initial_weights = params.weights.copy()
     initial_total = comp_data["s_total"]
 
     feedback_1 = client.post(
@@ -179,7 +191,8 @@ def test_feedback_updates_parameters_and_scores() -> None:
     data_1 = feedback_1.json()
 
     assert data_1["updated_s_total"] < initial_total
-    assert data_1["parameters"]["w"] < 1.0
+    assert data_1["parameters"]["weights"][0] > pytest.approx(initial_weights[0])
+    assert data_1["parameters"]["tau"] < 0.82
 
     stored_after_first = store.get_comparison(comp_data["id"])
     assert stored_after_first is not None
@@ -193,7 +206,7 @@ def test_feedback_updates_parameters_and_scores() -> None:
     data_2 = feedback_2.json()
 
     assert data_2["updated_s_total"] < data_1["updated_s_total"]
-    assert data_2["parameters"]["w"] < data_1["parameters"]["w"]
+    assert data_2["parameters"]["weights"][0] > data_1["parameters"]["weights"][0]
 
     feedback_3 = client.post(
         "/api/feedback",
@@ -203,4 +216,4 @@ def test_feedback_updates_parameters_and_scores() -> None:
     data_3 = feedback_3.json()
 
     assert data_3["updated_s_total"] > data_2["updated_s_total"]
-    assert data_3["parameters"]["w"] > data_2["parameters"]["w"]
+    assert data_3["parameters"]["weights"][0] < data_2["parameters"]["weights"][0]
