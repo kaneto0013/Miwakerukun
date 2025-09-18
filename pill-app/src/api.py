@@ -9,11 +9,13 @@ from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.params import Query
 from PIL import Image, UnidentifiedImageError
 
-from . import schemas, store
+from . import detect, schemas, store, visualize
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 RAW_DIR = BASE_DIR / "data" / "raw"
 RAW_DIR.mkdir(parents=True, exist_ok=True)
+OUTPUT_DIR = BASE_DIR / "data" / "outputs"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="pill-app")
 
@@ -60,6 +62,22 @@ async def upload_image(
 
     relative_path = str(file_path.relative_to(BASE_DIR))
     record = store.create_image(bag_id=bag_id, path=relative_path, width=width, height=height)
+
+    try:
+        detections, image_size = detect.detect_pills(file_path)
+    except Exception:
+        detections = []
+        image_size = (height, width)
+
+    unrecognized_regions, _ = detect.identify_unrecognized_regions(detections, image_size)
+    store.replace_detections(record["id"], detections)
+
+    visualization_path = visualize.visualization_path_for(record["id"], OUTPUT_DIR)
+    try:
+        visualize.visualize_detections(file_path, detections, unrecognized_regions, visualization_path)
+    except FileNotFoundError:
+        pass
+
     return schemas.Image(**record)
 
 
@@ -69,3 +87,33 @@ def get_bag(bag_id: str) -> schemas.BagWithImages:
     if bag is None:
         raise HTTPException(status_code=404, detail="Bag not found")
     return schemas.BagWithImages(**bag)
+
+
+@app.get("/api/images/{image_id}", response_model=schemas.ImageDetections)
+def get_image_with_detections(image_id: str) -> schemas.ImageDetections:
+    image = store.get_image(image_id)
+    if image is None:
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    detections = store.list_detections(image_id)
+    image_path = BASE_DIR / image["path"]
+    image_size = (int(image["height"]), int(image["width"]))
+
+    unrecognized_regions, message = detect.identify_unrecognized_regions(detections, image_size)
+
+    visualization_path = visualize.visualization_path_for(image_id, OUTPUT_DIR)
+    if not visualization_path.exists() and image_path.exists():
+        try:
+            visualize.visualize_detections(image_path, detections, unrecognized_regions, visualization_path)
+        except FileNotFoundError:
+            pass
+
+    relative_visualization_path = str(visualization_path.relative_to(BASE_DIR))
+
+    return schemas.ImageDetections(
+        image=schemas.Image(**image),
+        detections=[schemas.Detection(**det) for det in detections],
+        visualization_path=relative_visualization_path,
+        unrecognized_regions=[schemas.RegionFlag(**region) for region in unrecognized_regions],
+        message=message,
+    )
