@@ -82,6 +82,8 @@ def init_db() -> None:
                 score_shape REAL NOT NULL,
                 score_count REAL NOT NULL,
                 score_size REAL NOT NULL,
+                score_embed REAL DEFAULT 0.0,
+                score_ocr REAL DEFAULT 0.0,
                 s_total REAL NOT NULL,
                 decision TEXT NOT NULL,
                 preview_path TEXT,
@@ -108,6 +110,9 @@ def init_db() -> None:
         if "score_embed" not in column_names:
             conn.execute("ALTER TABLE comparisons ADD COLUMN score_embed REAL DEFAULT 0.0")
             conn.execute("UPDATE comparisons SET score_embed = 0.0 WHERE score_embed IS NULL")
+        if "score_ocr" not in column_names:
+            conn.execute("ALTER TABLE comparisons ADD COLUMN score_ocr REAL DEFAULT 0.0")
+            conn.execute("UPDATE comparisons SET score_ocr = 0.0 WHERE score_ocr IS NULL")
         conn.commit()
     finally:
         conn.close()
@@ -324,7 +329,14 @@ def list_samples_for_bag(bag_id: str) -> List[Dict[str, object]]:
                 samples.embed,
                 samples.size_px,
                 samples.ocr_text,
-                detections.image_id
+                detections.image_id,
+                detections.x1 AS x1,
+                detections.y1 AS y1,
+                detections.x2 AS x2,
+                detections.y2 AS y2,
+                images.path AS image_path,
+                images.width AS image_width,
+                images.height AS image_height
             FROM samples
             JOIN detections ON detections.id = samples.detection_id
             JOIN images ON images.id = detections.image_id
@@ -334,6 +346,20 @@ def list_samples_for_bag(bag_id: str) -> List[Dict[str, object]]:
             (bag_id,),
         )
         return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
+def update_sample_ocr(sample_id: str, text: Optional[str]) -> None:
+    """Persist OCR results for a sample."""
+
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE samples SET ocr_text = ? WHERE id = ?",
+            (text if text else "", sample_id),
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -366,6 +392,7 @@ def create_comparison(
     score_count: float,
     score_size: float,
     score_embed: float,
+    score_ocr: float,
     s_total: float,
     decision: str,
     preview_path: Optional[str] = None,
@@ -388,12 +415,13 @@ def create_comparison(
                 score_count,
                 score_size,
                 score_embed,
+                score_ocr,
                 s_total,
                 decision,
                 preview_path,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record_id,
@@ -404,6 +432,7 @@ def create_comparison(
                 float(score_count),
                 float(score_size),
                 float(score_embed),
+                float(score_ocr),
                 float(s_total),
                 decision,
                 preview_path,
@@ -422,6 +451,7 @@ def create_comparison(
         "score_count": float(score_count),
         "score_size": float(score_size),
         "score_embed": float(score_embed),
+        "score_ocr": float(score_ocr),
         "s_total": float(s_total),
         "decision": decision,
         "preview_path": preview_path,
@@ -445,6 +475,7 @@ def get_comparison(comparison_id: str) -> Optional[Dict[str, object]]:
                 score_count,
                 score_size,
                 score_embed,
+                score_ocr,
                 s_total,
                 decision,
                 preview_path,
@@ -477,6 +508,7 @@ def list_comparisons(limit: Optional[int] = None) -> List[Dict[str, object]]:
                 comparisons.score_count,
                 comparisons.score_size,
                 comparisons.score_embed,
+                comparisons.score_ocr,
                 comparisons.s_total,
                 comparisons.decision,
                 comparisons.preview_path,

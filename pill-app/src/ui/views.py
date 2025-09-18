@@ -11,7 +11,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from PIL import Image, ImageStat, UnidentifiedImageError
 
-from .. import feedback, signature, store, visualize
+from .. import feedback, ocr, signature, store, visualize
 from ..image_ops import (
     BagNotFoundError,
     EmptyUploadError,
@@ -283,6 +283,7 @@ def compare_page(
             {"label": "個数", "value": float(comparison["score_count"])},
             {"label": "サイズ", "value": float(comparison["score_size"])},
             {"label": "埋め込み", "value": float(comparison.get("score_embed") or 0.0)},
+            {"label": "刻印", "value": float(comparison.get("score_ocr") or 0.0)},
         ]
         preview_url = _resolve_file_url(request, comparison.get("preview_path"))
         feedback_entries = store.list_feedback(comparison_id)
@@ -335,6 +336,18 @@ def run_comparison(
         sim_size=score_size,
         sim_text=0.0,
     )
+
+    score_ocr = 0.0
+    if ocr.is_score_ambiguous(s_total):
+        score_ocr = ocr.score_samples(samples_a, samples_b, BASE_DIR)
+        s_total = params.compute_total(
+            sim_embed=score_embed,
+            sim_color=score_color,
+            sim_count=score_count,
+            sim_size=score_size,
+            sim_text=score_ocr,
+        )
+
     decision = "bag_a" if s_total >= params.tau else "bag_b"
 
     preview_path = _find_preview_path(bag_a) or _find_preview_path(bag_b)
@@ -347,6 +360,7 @@ def run_comparison(
         score_count=score_count,
         score_size=score_size,
         score_embed=score_embed,
+        score_ocr=score_ocr,
         s_total=s_total,
         decision=decision,
         preview_path=preview_path,

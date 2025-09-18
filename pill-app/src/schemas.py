@@ -80,6 +80,7 @@ class Comparison(BaseModel):
     score_count: float
     score_size: float
     score_embed: float = 0.0
+    score_ocr: float = 0.0
     s_total: float
     decision: str
     preview_path: Optional[str] = None

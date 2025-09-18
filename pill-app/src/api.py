@@ -10,7 +10,7 @@ from fastapi.params import Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import feedback, image_ops, schemas, signature, store
+from . import feedback, image_ops, ocr, schemas, signature, store
 from .ui.views import router as ui_router
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -96,33 +96,56 @@ def create_comparison(payload: schemas.ComparisonCreate) -> schemas.Comparison:
     params = feedback.get_state()
     samples_a = store.list_samples_for_bag(payload.bag_id_a)
     samples_b = store.list_samples_for_bag(payload.bag_id_b)
+    score_color = float(payload.score_color)
+    score_shape = float(payload.score_shape)
+    score_count = float(payload.score_count)
+    score_size = float(payload.score_size)
     score_embed = signature.boe_similarity(samples_a, samples_b)
+
     s_total = params.compute_total(
         sim_embed=score_embed,
-        sim_color=float(payload.score_color),
-        sim_count=float(payload.score_count),
-        sim_size=float(payload.score_size),
+        sim_color=score_color,
+        sim_count=score_count,
+        sim_size=score_size,
         sim_text=0.0,
     )
+
+    score_ocr = 0.0
+    if ocr.is_score_ambiguous(s_total):
+        logger.info(
+            "Total score %.4f within ambiguous band %s -> running OCR",
+            s_total,
+            ocr.AMBIGUOUS_RANGE,
+        )
+        score_ocr = ocr.score_samples(samples_a, samples_b, BASE_DIR)
+        s_total = params.compute_total(
+            sim_embed=score_embed,
+            sim_color=score_color,
+            sim_count=score_count,
+            sim_size=score_size,
+            sim_text=score_ocr,
+        )
 
     record = store.create_comparison(
         bag_id_a=payload.bag_id_a,
         bag_id_b=payload.bag_id_b,
-        score_color=payload.score_color,
-        score_shape=payload.score_shape,
-        score_count=payload.score_count,
-        score_size=payload.score_size,
+        score_color=score_color,
+        score_shape=score_shape,
+        score_count=score_count,
+        score_size=score_size,
         score_embed=score_embed,
+        score_ocr=score_ocr,
         s_total=s_total,
         decision=payload.decision,
         preview_path=payload.preview_path,
     )
 
     logger.info(
-        "Comparison %s stored (s_total=%.6f, score_embed=%.4f, weights=%s, tau=%.4f)",
+        "Comparison %s stored (s_total=%.6f, score_embed=%.4f, score_ocr=%.4f, weights=%s, tau=%.4f)",
         record["id"],
         s_total,
         score_embed,
+        score_ocr,
         ",".join(f"{w:.2f}" for w in params.weights),
         params.tau,
     )
