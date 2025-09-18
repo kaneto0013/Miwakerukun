@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+db/app.sqlite
+data/raw/*
+!data/raw/.gitignore
+data/outputs/*
+!data/outputs/.gitignore
