@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 db/app.sqlite
+db/parameters.json
 data/raw/*
 !data/raw/.gitignore
 data/outputs/*

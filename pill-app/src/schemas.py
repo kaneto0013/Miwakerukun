@@ -90,6 +90,7 @@ class Comparison(BaseModel):
 class FeedbackCreate(BaseModel):
     comparison_id: str
     is_correct: int = Field(ge=0, le=1)
+    operator: str = Field(min_length=1, max_length=128)
     note: Optional[str] = None
 
 
@@ -97,6 +98,7 @@ class Feedback(BaseModel):
     id: int
     comparison_id: str
     is_correct: int
+    operator: str
     note: Optional[str] = None
     created_at: str
     updated_s_total: float
