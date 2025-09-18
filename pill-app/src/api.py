@@ -12,7 +12,7 @@ from fastapi.params import Query
 from fastapi.responses import HTMLResponse
 from PIL import Image, UnidentifiedImageError
 
-from . import detect, feedback, schemas, store, visualize
+from . import detect, embed, feedback, indexer, schemas, store, visualize
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 RAW_DIR = BASE_DIR / "data" / "raw"
@@ -23,6 +23,8 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="pill-app")
+
+EMBED_SCORE_WEIGHT = 0.1
 
 
 @app.get("/health")
@@ -75,7 +77,31 @@ async def upload_image(
         image_size = (height, width)
 
     unrecognized_regions, _ = detect.identify_unrecognized_regions(detections, image_size)
-    store.replace_detections(record["id"], detections)
+    stored_detections = store.replace_detections(record["id"], detections)
+
+    try:
+        samples = []
+        for det in stored_detections:
+            vector = embed.embed_crop(
+                pil_image,
+                (det["x1"], det["y1"], det["x2"], det["y2"]),
+            )
+            if vector.size != embed.EMBED_DIM:
+                continue
+            area = max(0, (det["x2"] - det["x1"]) * (det["y2"] - det["y1"]))
+            samples.append(
+                {
+                    "id": str(uuid.uuid4()),
+                    "detection_id": det["id"],
+                    "embed": vector.astype("float32", copy=False).tobytes(),
+                    "size_px": float(area),
+                    "ocr_text": None,
+                }
+            )
+        if samples:
+            store.insert_samples(samples)
+    except Exception:
+        logger.exception("Failed to compute embeddings for image %s", record["id"])
 
     visualization_path = visualize.visualization_path_for(record["id"], OUTPUT_DIR)
     try:
@@ -132,7 +158,7 @@ def create_comparison(payload: schemas.ComparisonCreate) -> schemas.Comparison:
         raise HTTPException(status_code=404, detail="Bag not found")
 
     params = feedback.get_state()
-    s_total = params.compute_total(
+    signature_total = params.compute_total(
         [
             payload.score_color,
             payload.score_shape,
@@ -140,6 +166,10 @@ def create_comparison(payload: schemas.ComparisonCreate) -> schemas.Comparison:
             payload.score_size,
         ]
     )
+    samples_a = store.list_samples_for_bag(payload.bag_id_a)
+    samples_b = store.list_samples_for_bag(payload.bag_id_b)
+    score_embed = indexer.mean_nearest_similarity(samples_a, samples_b)
+    s_total = signature_total + EMBED_SCORE_WEIGHT * score_embed
 
     record = store.create_comparison(
         bag_id_a=payload.bag_id_a,
@@ -148,15 +178,17 @@ def create_comparison(payload: schemas.ComparisonCreate) -> schemas.Comparison:
         score_shape=payload.score_shape,
         score_count=payload.score_count,
         score_size=payload.score_size,
+        score_embed=score_embed,
         s_total=s_total,
         decision=payload.decision,
         preview_path=payload.preview_path,
     )
 
     logger.info(
-        "Comparison %s stored (s_total=%.6f, w=%.4f, tau=%.4f)",
+        "Comparison %s stored (s_total=%.6f, score_embed=%.4f, w=%.4f, tau=%.4f)",
         record["id"],
         s_total,
+        score_embed,
         params.w,
         params.tau,
     )
@@ -178,7 +210,7 @@ def submit_feedback(payload: schemas.FeedbackCreate) -> schemas.Feedback:
 
     params = feedback.get_state()
     params.register_feedback(bool(payload.is_correct))
-    updated_total = params.compute_total(
+    signature_total = params.compute_total(
         [
             comparison["score_color"],
             comparison["score_shape"],
@@ -186,13 +218,16 @@ def submit_feedback(payload: schemas.FeedbackCreate) -> schemas.Feedback:
             comparison["score_size"],
         ]
     )
+    score_embed = float(comparison.get("score_embed") or 0.0)
+    updated_total = signature_total + EMBED_SCORE_WEIGHT * score_embed
     store.update_comparison_total(payload.comparison_id, updated_total)
 
     logger.info(
-        "Feedback %s applied to %s -> s_total %.6f",
+        "Feedback %s applied to %s -> s_total %.6f (score_embed=%.4f)",
         feedback_record["id"],
         payload.comparison_id,
         updated_total,
+        score_embed,
     )
 
     return schemas.Feedback(

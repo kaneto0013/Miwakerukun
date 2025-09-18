@@ -106,6 +106,14 @@ def test_get_image_with_detections() -> None:
     assert "unrecognized_regions" in data
     assert data["message"] is None or isinstance(data["message"], str)
 
+    samples = store.list_samples_for_bag(bag_id)
+    assert samples, "embedding samples should be stored"
+    first_embed = samples[0]["embed"]
+    if isinstance(first_embed, memoryview):
+        first_embed = first_embed.tobytes()
+    assert isinstance(first_embed, (bytes, bytearray))
+    assert len(first_embed) == 4 * 512
+
 
 def test_compare_endpoint_records_comparison() -> None:
     bag_a = client.post("/api/bags", json={"label": "A"})
@@ -134,6 +142,7 @@ def test_compare_endpoint_records_comparison() -> None:
     assert data["decision"] == "bag_a"
     assert data["preview_path"] == "data/outputs/sample.png"
     assert data["s_total"] == expected_total
+    assert data["score_embed"] == pytest.approx(0.0, abs=1e-6)
 
     stored = store.get_comparison(data["id"])
     assert stored is not None
