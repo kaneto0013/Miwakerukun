@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block title %}比較{% endblock %}
+{% block content %}
+  <h1 class="page-title">袋の比較</h1>
+  <section class="card">
+    <h2>袋の選択</h2>
+    <p class="muted">A/B を選択して比較を実行します。各指標はサンプルに基づく簡易スコアです。</p>
+    <form action="{{ request.url_for('ui_run_comparison') }}" method="post" class="layout-columns">
+      <div>
+        <label for="bag-a">袋 A</label>
+        <select id="bag-a" name="bag_id_a" required>
+          <option value="" disabled {{ not selected_a and 'selected' or '' }}>選択してください</option>
+          {% for bag in bags %}
+            <option value="{{ bag.id }}" {{ selected_a == bag.id and 'selected' or '' }}>
+              {{ bag.label or '(ラベル未設定)' }} ({{ bag.created_at }})
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label for="bag-b">袋 B</label>
+        <select id="bag-b" name="bag_id_b" required>
+          <option value="" disabled {{ not selected_b and 'selected' or '' }}>選択してください</option>
+          {% for bag in bags %}
+            <option value="{{ bag.id }}" {{ selected_b == bag.id and 'selected' or '' }}>
+              {{ bag.label or '(ラベル未設定)' }} ({{ bag.created_at }})
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+      <div style="grid-column:1 / -1;">
+        <button type="submit">比較を実行</button>
+      </div>
+    </form>
+  </section>
+
+  {% if comparison %}
+    <section class="card">
+      <h2>比較結果</h2>
+      <p><strong>ID:</strong> {{ comparison.id }} / <strong>決定:</strong> {{ comparison.decision }}</p>
+      <div class="layout-columns two">
+        <div>
+          <table>
+            <thead>
+              <tr><th>指標</th><th>スコア</th></tr>
+            </thead>
+            <tbody>
+              {% for item in breakdown %}
+                <tr>
+                  <th>{{ item.label }}</th>
+                  <td>{{ '%.3f' % item.value }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+          <p><strong>総合スコア:</strong> <span id="current-total">{{ '%.3f' % comparison.s_total }}</span></p>
+          <p><strong>閾値 τ:</strong> {{ '%.3f' % parameters.tau }}</p>
+          <div class="chips">
+            {% for weight in parameters.weights %}
+              <span class="chip">w{{ loop.index0 }}={{ '%.2f' % weight }}</span>
+            {% endfor %}
+          </div>
+        </div>
+        <div>
+          <h3>可視化</h3>
+          {% if preview_url %}
+            <img src="{{ preview_url }}" alt="preview" style="width:100%;max-width:360px;border-radius:12px;border:1px solid #e5e7eb;" />
+            <p class="muted">保存された PNG から復元しています。</p>
+          {% else %}
+            <p class="muted">プレビュー画像は保存されていません。</p>
+          {% endif %}
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>フィードバック</h2>
+      <p class="muted">正解/誤りとメモを登録するとスコアが即時反映されます。</p>
+      <textarea id="feedback-note" placeholder="メモ (任意)"></textarea>
+      <div style="display:flex;gap:0.75rem;">
+        <button type="button" class="secondary" data-feedback="1">✔ 正しい</button>
+        <button type="button" class="secondary" data-feedback="0">✖ 誤り</button>
+      </div>
+      <p id="feedback-status" class="muted"></p>
+      <h3>履歴</h3>
+      <ul id="feedback-list">
+        {% if feedback_entries %}
+          {% for entry in feedback_entries %}
+            <li>{{ entry.created_at }} : {{ entry.is_correct and '✔' or '✖' }}{% if entry.note %} - {{ entry.note }}{% endif %}</li>
+          {% endfor %}
+        {% else %}
+          <li class="muted">まだフィードバックはありません。</li>
+        {% endif %}
+      </ul>
+    </section>
+  {% endif %}
+
+  {% if comparison %}
+    <script>
+      (function () {
+        const buttons = document.querySelectorAll('[data-feedback]');
+        const note = document.getElementById('feedback-note');
+        const statusEl = document.getElementById('feedback-status');
+        const list = document.getElementById('feedback-list');
+        const totalEl = document.getElementById('current-total');
+        buttons.forEach((button) => {
+          button.addEventListener('click', async () => {
+            const value = button.dataset.feedback;
+            const payload = {
+              comparison_id: '{{ comparison.id }}',
+              is_correct: parseInt(value, 10),
+              note: note.value || null,
+            };
+            button.disabled = true;
+            statusEl.textContent = '送信中...';
+            try {
+              const response = await fetch('/api/feedback', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+              });
+              const data = await response.json();
+              if (!response.ok) {
+                throw new Error(data.detail || '送信に失敗しました');
+              }
+              if (totalEl) {
+                totalEl.textContent = data.updated_s_total.toFixed(3);
+              }
+              const entry = document.createElement('li');
+              const symbol = payload.is_correct ? '✔' : '✖';
+              entry.textContent = `${data.created_at} : ${symbol}${payload.note ? ' - ' + payload.note : ''}`;
+              if (list) {
+                if (list.children.length && list.children[0].classList.contains('muted')) {
+                  list.innerHTML = '';
+                }
+                list.appendChild(entry);
+              }
+              statusEl.textContent = `更新しました (τ=${data.parameters.tau.toFixed(3)})`;
+              window.showToast && window.showToast('即時反映済み');
+              note.value = '';
+            } catch (error) {
+              console.error(error);
+              statusEl.textContent = error.message || '送信に失敗しました';
+              window.showToast && window.showToast('フィードバック送信に失敗しました');
+            } finally {
+              button.disabled = false;
+            }
+          });
+        });
+      })();
+    </script>
+  {% endif %}
+{% endblock %}

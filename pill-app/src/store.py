@@ -132,6 +132,22 @@ def create_bag(label: Optional[str]) -> Dict[str, object]:
     return {"id": bag_id, "label": label, "created_at": now}
 
 
+def list_bags(limit: Optional[int] = None) -> List[Dict[str, object]]:
+    """Return bags ordered by creation time (newest first)."""
+
+    conn = get_connection()
+    try:
+        query = "SELECT id, label, created_at FROM bags ORDER BY created_at DESC"
+        params: tuple[object, ...] = ()
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (int(limit),)
+        cursor = conn.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
+
+
 def get_bag_basic(bag_id: str) -> Optional[Dict[str, object]]:
     """Fetch a bag without loading its images."""
     conn = get_connection()
@@ -442,6 +458,42 @@ def get_comparison(comparison_id: str) -> Optional[Dict[str, object]]:
         if row is None:
             return None
         return dict(row)
+    finally:
+        conn.close()
+
+
+def list_comparisons(limit: Optional[int] = None) -> List[Dict[str, object]]:
+    """List stored comparisons with associated bag labels."""
+
+    conn = get_connection()
+    try:
+        query = """
+            SELECT
+                comparisons.id,
+                comparisons.bag_id_a,
+                comparisons.bag_id_b,
+                comparisons.score_color,
+                comparisons.score_shape,
+                comparisons.score_count,
+                comparisons.score_size,
+                comparisons.score_embed,
+                comparisons.s_total,
+                comparisons.decision,
+                comparisons.preview_path,
+                comparisons.created_at,
+                bag_a.label AS bag_a_label,
+                bag_b.label AS bag_b_label
+            FROM comparisons
+            LEFT JOIN bags AS bag_a ON bag_a.id = comparisons.bag_id_a
+            LEFT JOIN bags AS bag_b ON bag_b.id = comparisons.bag_id_b
+            ORDER BY comparisons.created_at DESC, comparisons.id DESC
+        """
+        params: tuple[object, ...] = ()
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (int(limit),)
+        cursor = conn.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
 

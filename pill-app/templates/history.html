@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}履歴{% endblock %}
+{% block content %}
+  <h1 class="page-title">比較履歴</h1>
+  <section class="card">
+    <h2>保存された結果</h2>
+    {% if history %}
+      <div class="grid columns-3">
+        {% for item in history %}
+          <article style="border:1px solid #e5e7eb;border-radius:14px;padding:1rem;background:#fff;">
+            <h3 style="margin-top:0;font-size:1.1rem;">{{ item.id }}</h3>
+            <p class="muted">{{ item.created_at }} / 総合 {{ '%.3f' % item.s_total }} / 決定 {{ item.decision }}</p>
+            {% if item.preview_url %}
+              <img src="{{ item.preview_url }}" alt="preview" class="thumb" style="height:140px;" />
+            {% endif %}
+            <div class="chips" style="margin-top:0.6rem;">
+              <a class="button-link secondary" href="{{ item.detail_url }}">結果を表示</a>
+            </div>
+            <div style="margin-top:0.8rem;">
+              <strong>A:</strong> <a href="{{ item.bag_a.link }}">{{ item.bag_a.label }}</a><br />
+              {% if item.bag_a.image_url %}
+                <img src="{{ item.bag_a.image_url }}" alt="bag A" style="width:100%;max-height:120px;object-fit:cover;border-radius:10px;margin-top:0.4rem;" />
+              {% endif %}
+              <strong>B:</strong> <a href="{{ item.bag_b.link }}">{{ item.bag_b.label }}</a><br />
+              {% if item.bag_b.image_url %}
+                <img src="{{ item.bag_b.image_url }}" alt="bag B" style="width:100%;max-height:120px;object-fit:cover;border-radius:10px;margin-top:0.4rem;" />
+              {% endif %}
+            </div>
+            <details style="margin-top:0.8rem;">
+              <summary>JSONを表示</summary>
+              <pre style="background:#0f172a;color:#f8fafc;padding:0.75rem;border-radius:10px;overflow:auto;font-size:0.8rem;">{{ item.json_payload }}</pre>
+            </details>
+          </article>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted">比較履歴はまだありません。</p>
+    {% endif %}
+  </section>
+{% endblock %}

@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}画像詳細{% endblock %}
+{% block content %}
+  <h1 class="page-title">画像詳細</h1>
+  <div class="card">
+    <div style="display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-start;">
+      <div style="flex:1 1 320px;">
+        <h2>オリジナル</h2>
+        {% if raw_url %}
+          <img src="{{ raw_url }}" alt="original" style="width:100%;border-radius:12px;border:1px solid #e5e7eb;" />
+        {% else %}
+          <p class="muted">原画像ファイルが見つかりません。</p>
+        {% endif %}
+      </div>
+      <div style="flex:1 1 320px;">
+        <h2>検出結果</h2>
+        {% if visualization_url %}
+          <img id="viz" src="{{ visualization_url }}" alt="detections" style="width:100%;border-radius:12px;border:1px solid #e5e7eb;" />
+        {% else %}
+          <p class="muted">可視化がまだ生成されていません。</p>
+        {% endif %}
+      </div>
+    </div>
+    <div style="margin-top:1.5rem;display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-start;">
+      <div style="flex:1 1 320px;">
+        <h3>ステータス</h3>
+        <p><strong>画像ID:</strong> {{ image.id }}<br />
+        <strong>袋:</strong> {{ bag.label or '(ラベル未設定)' }} <span class="muted">({{ bag.id }})</span><br />
+        <strong>登録日時:</strong> {{ image.created_at }}</p>
+        <p id="analysis-message">{{ message or '正常に解析されています。' }}</p>
+        <button id="reanalyze" type="button">再解析</button>
+      </div>
+      <div style="flex:1 1 320px;">
+        <h3>未認識領域</h3>
+        <ul id="flag-list">
+          {% if unrecognized %}
+            {% for region in unrecognized %}
+              <li>({{ region.x1 }}, {{ region.y1 }}) - ({{ region.x2 }}, {{ region.y2 }}) : {{ region.reason }}</li>
+            {% endfor %}
+          {% else %}
+            <li class="muted">指摘はありません。</li>
+          {% endif %}
+        </ul>
+      </div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      const button = document.getElementById('reanalyze');
+      const messageEl = document.getElementById('analysis-message');
+      const flagList = document.getElementById('flag-list');
+      const viz = document.getElementById('viz');
+      if (!button) return;
+      button.addEventListener('click', async () => {
+        button.disabled = true;
+        button.textContent = '解析中...';
+        try {
+          const response = await fetch('/api/images/{{ image.id }}/reanalyze', { method: 'POST' });
+          const data = await response.json();
+          if (!response.ok) {
+            throw new Error(data.detail || '失敗しました');
+          }
+          if (viz && data.visualization_path) {
+            const url = '{{ request.url_for('files', path='') }}' + data.visualization_path + '?t=' + Date.now();
+            viz.src = url;
+          }
+          if (messageEl) {
+            messageEl.textContent = data.message || '再解析が完了しました。';
+          }
+          if (flagList) {
+            flagList.innerHTML = '';
+            if (data.unrecognized_regions && data.unrecognized_regions.length) {
+              for (const region of data.unrecognized_regions) {
+                const li = document.createElement('li');
+                li.textContent = `(${region.x1}, ${region.y1}) - (${region.x2}, ${region.y2}) : ${region.reason}`;
+                flagList.appendChild(li);
+              }
+            } else {
+              const li = document.createElement('li');
+              li.className = 'muted';
+              li.textContent = '指摘はありません。';
+              flagList.appendChild(li);
+            }
+          }
+          window.showToast && window.showToast('再解析しました (即時反映済み)');
+        } catch (error) {
+          console.error(error);
+          window.showToast && window.showToast('再解析に失敗しました');
+        } finally {
+          button.disabled = false;
+          button.textContent = '再解析';
+        }
+      });
+    })();
+  </script>
+{% endblock %}
