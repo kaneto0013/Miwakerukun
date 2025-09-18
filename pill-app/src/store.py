@@ -62,6 +62,18 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS samples (
+                id TEXT PRIMARY KEY,
+                detection_id INTEGER NOT NULL,
+                embed BLOB NOT NULL,
+                size_px REAL NOT NULL,
+                ocr_text TEXT,
+                FOREIGN KEY (detection_id) REFERENCES detections(id) ON DELETE CASCADE
+            );
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS comparisons (
                 id TEXT PRIMARY KEY,
                 bag_id_a TEXT NOT NULL,
@@ -91,6 +103,11 @@ def init_db() -> None:
             );
             """
         )
+        cursor = conn.execute("PRAGMA table_info(comparisons)")
+        column_names = {row["name"] for row in cursor.fetchall()}
+        if "score_embed" not in column_names:
+            conn.execute("ALTER TABLE comparisons ADD COLUMN score_embed REAL DEFAULT 0.0")
+            conn.execute("UPDATE comparisons SET score_embed = 0.0 WHERE score_embed IS NULL")
         conn.commit()
     finally:
         conn.close()
@@ -205,18 +222,22 @@ def create_image(bag_id: str, path: str, width: int, height: int) -> Dict[str, o
     }
 
 
-def replace_detections(image_id: str, detections: Iterable[Dict[str, object]]) -> None:
-    """Replace detections for an image with the provided records."""
+def replace_detections(image_id: str, detections: Iterable[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Replace detections for an image with the provided records.
+
+    The newly stored detections are returned, including their database identifiers.
+    """
 
     conn = get_connection()
+    stored: List[Dict[str, object]] = []
     try:
         conn.execute("DELETE FROM detections WHERE image_id = ?", (image_id,))
-        conn.executemany(
-            """
-            INSERT INTO detections (image_id, x1, y1, x2, y2, score)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            [
+        for det in detections:
+            cursor = conn.execute(
+                """
+                INSERT INTO detections (image_id, x1, y1, x2, y2, score)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
                 (
                     image_id,
                     int(det["x1"]),
@@ -224,11 +245,79 @@ def replace_detections(image_id: str, detections: Iterable[Dict[str, object]]) -
                     int(det["x2"]),
                     int(det["y2"]),
                     float(det["score"]),
+                ),
+            )
+            detection_id = int(cursor.lastrowid)
+            stored.append(
+                {
+                    "id": detection_id,
+                    "image_id": image_id,
+                    "x1": int(det["x1"]),
+                    "y1": int(det["y1"]),
+                    "x2": int(det["x2"]),
+                    "y2": int(det["y2"]),
+                    "score": float(det["score"]),
+                }
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return stored
+
+
+def insert_samples(samples: Iterable[Dict[str, object]]) -> None:
+    """Insert embedding samples for detections."""
+
+    items = list(samples)
+    if not items:
+        return
+
+    conn = get_connection()
+    try:
+        conn.executemany(
+            """
+            INSERT INTO samples (id, detection_id, embed, size_px, ocr_text)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    sample["id"],
+                    int(sample["detection_id"]),
+                    sqlite3.Binary(sample["embed"]),
+                    float(sample.get("size_px", 0.0)),
+                    sample.get("ocr_text"),
                 )
-                for det in detections
+                for sample in items
             ],
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def list_samples_for_bag(bag_id: str) -> List[Dict[str, object]]:
+    """Return embedding samples associated with all detections in a bag."""
+
+    conn = get_connection()
+    try:
+        cursor = conn.execute(
+            """
+            SELECT
+                samples.id,
+                samples.detection_id,
+                samples.embed,
+                samples.size_px,
+                samples.ocr_text,
+                detections.image_id
+            FROM samples
+            JOIN detections ON detections.id = samples.detection_id
+            JOIN images ON images.id = detections.image_id
+            WHERE images.bag_id = ?
+            ORDER BY samples.id ASC
+            """,
+            (bag_id,),
+        )
+        return [dict(row) for row in cursor.fetchall()]
     finally:
         conn.close()
 
@@ -260,6 +349,7 @@ def create_comparison(
     score_shape: float,
     score_count: float,
     score_size: float,
+    score_embed: float,
     s_total: float,
     decision: str,
     preview_path: Optional[str] = None,
@@ -281,6 +371,7 @@ def create_comparison(
                 score_shape,
                 score_count,
                 score_size,
+                score_embed,
                 s_total,
                 decision,
                 preview_path,
@@ -296,6 +387,7 @@ def create_comparison(
                 float(score_shape),
                 float(score_count),
                 float(score_size),
+                float(score_embed),
                 float(s_total),
                 decision,
                 preview_path,
@@ -313,6 +405,7 @@ def create_comparison(
         "score_shape": float(score_shape),
         "score_count": float(score_count),
         "score_size": float(score_size),
+        "score_embed": float(score_embed),
         "s_total": float(s_total),
         "decision": decision,
         "preview_path": preview_path,
@@ -335,6 +428,7 @@ def get_comparison(comparison_id: str) -> Optional[Dict[str, object]]:
                 score_shape,
                 score_count,
                 score_size,
+                score_embed,
                 s_total,
                 decision,
                 preview_path,
