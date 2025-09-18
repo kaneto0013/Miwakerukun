@@ -100,6 +100,7 @@ def init_db() -> None:
                 comparison_id TEXT NOT NULL,
                 is_correct INTEGER NOT NULL,
                 note TEXT,
+                operator TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY (comparison_id) REFERENCES comparisons(id) ON DELETE CASCADE
             );
@@ -113,6 +114,13 @@ def init_db() -> None:
         if "score_ocr" not in column_names:
             conn.execute("ALTER TABLE comparisons ADD COLUMN score_ocr REAL DEFAULT 0.0")
             conn.execute("UPDATE comparisons SET score_ocr = 0.0 WHERE score_ocr IS NULL")
+        cursor = conn.execute("PRAGMA table_info(feedback)")
+        feedback_columns = {row["name"] for row in cursor.fetchall()}
+        if "operator" not in feedback_columns:
+            conn.execute("ALTER TABLE feedback ADD COLUMN operator TEXT DEFAULT 'unknown'")
+            conn.execute(
+                "UPDATE feedback SET operator = 'unknown' WHERE operator IS NULL"
+            )
         conn.commit()
     finally:
         conn.close()
@@ -421,7 +429,7 @@ def create_comparison(
                 preview_path,
                 created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 record_id,
@@ -551,7 +559,7 @@ def list_feedback(comparison_id: str) -> List[Dict[str, object]]:
     try:
         cursor = conn.execute(
             """
-            SELECT id, comparison_id, is_correct, note, created_at
+            SELECT id, comparison_id, is_correct, note, operator, created_at
             FROM feedback
             WHERE comparison_id = ?
             ORDER BY created_at ASC, id ASC
@@ -564,19 +572,26 @@ def list_feedback(comparison_id: str) -> List[Dict[str, object]]:
 
 
 def create_feedback(
-    *, comparison_id: str, is_correct: int, note: Optional[str] = None
+    *,
+    comparison_id: str,
+    is_correct: int,
+    operator: str,
+    note: Optional[str] = None,
 ) -> Dict[str, object]:
     """Insert a feedback entry linked to a comparison."""
 
     now = datetime.utcnow().isoformat()
+    operator = operator.strip()
+    if not operator:
+        operator = "unknown"
     conn = get_connection()
     try:
         cursor = conn.execute(
             """
-            INSERT INTO feedback (comparison_id, is_correct, note, created_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO feedback (comparison_id, is_correct, note, operator, created_at)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (comparison_id, int(is_correct), note, now),
+            (comparison_id, int(is_correct), note, operator, now),
         )
         feedback_id = cursor.lastrowid
         conn.commit()
@@ -588,5 +603,6 @@ def create_feedback(
         "comparison_id": comparison_id,
         "is_correct": int(is_correct),
         "note": note,
+        "operator": operator,
         "created_at": now,
     }

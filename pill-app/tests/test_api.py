@@ -2,6 +2,9 @@ import io
 from pathlib import Path
 
 import pytest
+
+pytest.importorskip("httpx", reason="httpx is required for FastAPI test client")
+
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw
 
@@ -240,7 +243,12 @@ def test_feedback_updates_parameters_and_scores() -> None:
 
     feedback_1 = client.post(
         "/api/feedback",
-        json={"comparison_id": comp_data["id"], "is_correct": 1, "note": "ok"},
+        json={
+            "comparison_id": comp_data["id"],
+            "is_correct": 1,
+            "operator": "alice",
+            "note": "ok",
+        },
     )
     feedback_1.raise_for_status()
     data_1 = feedback_1.json()
@@ -248,6 +256,7 @@ def test_feedback_updates_parameters_and_scores() -> None:
     assert data_1["updated_s_total"] < initial_total
     assert data_1["parameters"]["weights"][0] > pytest.approx(initial_weights[0])
     assert data_1["parameters"]["tau"] < 0.82
+    assert data_1["operator"] == "alice"
 
     stored_after_first = store.get_comparison(comp_data["id"])
     assert stored_after_first is not None
@@ -255,20 +264,34 @@ def test_feedback_updates_parameters_and_scores() -> None:
 
     feedback_2 = client.post(
         "/api/feedback",
-        json={"comparison_id": comp_data["id"], "is_correct": 1},
+        json={
+            "comparison_id": comp_data["id"],
+            "is_correct": 1,
+            "operator": "alice",
+        },
     )
     feedback_2.raise_for_status()
     data_2 = feedback_2.json()
 
     assert data_2["updated_s_total"] < data_1["updated_s_total"]
     assert data_2["parameters"]["weights"][0] > data_1["parameters"]["weights"][0]
+    assert data_2["operator"] == "alice"
 
     feedback_3 = client.post(
         "/api/feedback",
-        json={"comparison_id": comp_data["id"], "is_correct": 0, "note": "needs review"},
+        json={
+            "comparison_id": comp_data["id"],
+            "is_correct": 0,
+            "operator": "bob",
+            "note": "needs review",
+        },
     )
     feedback_3.raise_for_status()
     data_3 = feedback_3.json()
 
     assert data_3["updated_s_total"] > data_2["updated_s_total"]
     assert data_3["parameters"]["weights"][0] < data_2["parameters"]["weights"][0]
+    assert data_3["operator"] == "bob"
+
+    entries = store.list_feedback(comp_data["id"])
+    assert entries[-1]["operator"] == "bob"

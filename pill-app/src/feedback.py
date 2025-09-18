@@ -1,14 +1,56 @@
 """Adaptive parameter management for comparison scoring."""
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict
 
 import numpy as np
 
 from . import match
 
 logger = logging.getLogger(__name__)
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+PARAMETER_PATH = BASE_DIR / "db" / "parameters.json"
+PARAMETER_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _load_persisted() -> Dict[str, Any]:
+    """Return the persisted parameter state if available."""
+
+    if not PARAMETER_PATH.exists():
+        return {}
+    try:
+        with PARAMETER_PATH.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError) as error:
+        logger.warning("Failed to load persisted parameters: %s", error)
+        return {}
+    if not isinstance(data, dict):
+        logger.warning("Unexpected payload in %s: %r", PARAMETER_PATH, data)
+        return {}
+    return data
+
+
+def _persist(params: "AdaptiveParameters") -> None:
+    """Write the provided parameters to disk."""
+
+    payload = {
+        "weights": [float(w) for w in params.weights],
+        "tau": float(params.tau),
+        "updated_at": datetime.utcnow().isoformat(),
+    }
+    tmp_path = PARAMETER_PATH.with_suffix(".tmp")
+    try:
+        with tmp_path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+        tmp_path.replace(PARAMETER_PATH)
+    except OSError as error:
+        logger.warning("Failed to persist parameters: %s", error)
 
 
 @dataclass
@@ -88,6 +130,7 @@ class AdaptiveParameters:
             old_tau,
             self.tau,
         )
+        persist_state()
 
     @property
     def w(self) -> float:
@@ -96,7 +139,33 @@ class AdaptiveParameters:
         return float(self.weights[0])
 
 
-_STATE = AdaptiveParameters()
+def _initial_state() -> "AdaptiveParameters":
+    data = _load_persisted()
+    state = AdaptiveParameters()
+    if data:
+        weights = data.get("weights")
+        if isinstance(weights, (list, tuple)):
+            try:
+                normalized = match.normalize_weights(weights)
+                state.weights = normalized.tolist()
+            except ValueError as error:
+                logger.warning("Invalid weights in persisted state: %s", error)
+        tau = data.get("tau")
+        if tau is not None:
+            try:
+                state.tau = float(np.clip(float(tau), 0.0, 1.0))
+            except (TypeError, ValueError):
+                logger.warning("Invalid tau in persisted state: %s", tau)
+    return state
+
+
+_STATE = _initial_state()
+
+
+def persist_state() -> None:
+    """Write the current parameter state to disk."""
+
+    _persist(_STATE)
 
 
 def get_state() -> AdaptiveParameters:
@@ -110,4 +179,17 @@ def reset_state() -> None:
 
     global _STATE
     _STATE = AdaptiveParameters()
+    persist_state()
 
+
+def set_tau(value: float, *, persist: bool = True) -> float:
+    """Update the decision threshold τ and optionally persist it."""
+
+    params = get_state()
+    old_tau = params.tau
+    params.tau = float(np.clip(value, 0.0, 1.0))
+    params._grad_tau = 0.0
+    logger.info("τ updated from %.4f to %.4f", old_tau, params.tau)
+    if persist:
+        persist_state()
+    return params.tau

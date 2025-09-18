@@ -159,9 +159,14 @@ def submit_feedback(payload: schemas.FeedbackCreate) -> schemas.Feedback:
     if comparison is None:
         raise HTTPException(status_code=404, detail="Comparison not found")
 
+    operator = payload.operator.strip()
+    if not operator:
+        raise HTTPException(status_code=422, detail="Operator name must not be blank")
+
     feedback_record = store.create_feedback(
         comparison_id=payload.comparison_id,
         is_correct=payload.is_correct,
+        operator=operator,
         note=payload.note,
     )
 
@@ -178,9 +183,12 @@ def submit_feedback(payload: schemas.FeedbackCreate) -> schemas.Feedback:
     store.update_comparison_total(payload.comparison_id, updated_total)
 
     logger.info(
-        "Feedback %s applied to %s -> s_total %.6f (score_embed=%.4f, weights=%s)",
+        "Feedback %s by %s applied to %s -> decision=%s, is_correct=%s, s_total %.6f (score_embed=%.4f, weights=%s)",
         feedback_record["id"],
+        feedback_record["operator"],
         payload.comparison_id,
+        comparison.get("decision"),
+        "correct" if payload.is_correct else "incorrect",
         updated_total,
         score_embed,
         ",".join(f"{w:.2f}" for w in params.weights),
@@ -211,6 +219,8 @@ def comparison_page(comparison_id: str) -> HTMLResponse:
     feedback_items = "".join(
         "<li>"
         + html.escape(entry["created_at"])
+        + " : "
+        + html.escape(entry.get("operator") or "-")
         + " : "
         + ("✔" if entry["is_correct"] else "✖")
         + (" - " + html.escape(entry["note"]) if entry.get("note") else "")
@@ -257,7 +267,10 @@ def comparison_page(comparison_id: str) -> HTMLResponse:
           </table>
           <section>
             <h2>フィードバック</h2>
-            <textarea id=\"note\" class=\"note-area\" placeholder=\"メモを入力...\"></textarea>
+            <div style=\"display:flex; gap:0.75rem; margin-bottom:0.5rem;\">
+              <input id=\"operator\" type=\"text\" placeholder=\"担当者\" style=\"flex:0 0 200px; padding:0.4rem;\" />
+              <textarea id=\"note\" class=\"note-area\" placeholder=\"メモを入力...\"></textarea>
+            </div>
             <div class=\"actions\">
               <button type=\"button\" class=\"correct\" data-feedback=\"1\">✔ 正しい</button>
               <button type=\"button\" class=\"incorrect\" data-feedback=\"0\">✖ 誤り</button>
@@ -270,10 +283,22 @@ def comparison_page(comparison_id: str) -> HTMLResponse:
           </section>
         </main>
         <script>
+          const operatorEl = document.getElementById('operator');
+          const storedOperator = window.localStorage && window.localStorage.getItem('pill-app-operator');
+          if (storedOperator) {{
+            operatorEl.value = storedOperator;
+          }}
+
           const sendFeedback = async (isCorrect) => {{
             const noteEl = document.getElementById('note');
             const statusEl = document.getElementById('status');
             statusEl.textContent = '送信中...';
+            const operator = operatorEl.value.trim();
+            if (!operator) {{
+              statusEl.textContent = '担当者名を入力してください';
+              operatorEl.focus();
+              return;
+            }}
             try {{
               const response = await fetch('/api/feedback', {{
                 method: 'POST',
@@ -281,6 +306,7 @@ def comparison_page(comparison_id: str) -> HTMLResponse:
                 body: JSON.stringify({{
                   comparison_id: '{html.escape(comparison_id)}',
                   is_correct: isCorrect,
+                  operator,
                   note: noteEl.value || null
                 }})
               }});
@@ -291,6 +317,12 @@ def comparison_page(comparison_id: str) -> HTMLResponse:
                 const weights = data.parameters.weights || [];
                 const primary = weights.length ? weights[0].toFixed(3) : '0.000';
                 statusEl.textContent = `更新しました: s_total=${{data.updated_s_total.toFixed(3)}} (w₀=${primary}, τ=${{data.parameters.tau.toFixed(3)}})`;
+                try {{
+                  window.localStorage && window.localStorage.setItem('pill-app-operator', operator);
+                }} catch (error) {{
+                  console.warn('operator persistence failed', error);
+                }}
+                noteEl.value = '';
               }}
             }} catch (err) {{
               statusEl.textContent = '送信に失敗しました';

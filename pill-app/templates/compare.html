@@ -76,7 +76,16 @@
     <section class="card">
       <h2>フィードバック</h2>
       <p class="muted">正解/誤りとメモを登録するとスコアが即時反映されます。</p>
-      <textarea id="feedback-note" placeholder="メモ (任意)"></textarea>
+      <div class="layout-columns two">
+        <div>
+          <label for="feedback-operator">オペレーター</label>
+          <input id="feedback-operator" type="text" placeholder="担当者名" required />
+        </div>
+        <div>
+          <label for="feedback-note">メモ</label>
+          <textarea id="feedback-note" placeholder="メモ (任意)"></textarea>
+        </div>
+      </div>
       <div style="display:flex;gap:0.75rem;">
         <button type="button" class="secondary" data-feedback="1">✔ 正しい</button>
         <button type="button" class="secondary" data-feedback="0">✖ 誤り</button>
@@ -86,7 +95,7 @@
       <ul id="feedback-list">
         {% if feedback_entries %}
           {% for entry in feedback_entries %}
-            <li>{{ entry.created_at }} : {{ entry.is_correct and '✔' or '✖' }}{% if entry.note %} - {{ entry.note }}{% endif %}</li>
+            <li>{{ entry.created_at }} : {{ entry.operator }} : {{ entry.is_correct and '✔' or '✖' }}{% if entry.note %} - {{ entry.note }}{% endif %}</li>
           {% endfor %}
         {% else %}
           <li class="muted">まだフィードバックはありません。</li>
@@ -99,16 +108,30 @@
     <script>
       (function () {
         const buttons = document.querySelectorAll('[data-feedback]');
+        const operatorInput = document.getElementById('feedback-operator');
         const note = document.getElementById('feedback-note');
         const statusEl = document.getElementById('feedback-status');
         const list = document.getElementById('feedback-list');
         const totalEl = document.getElementById('current-total');
+        if (operatorInput) {
+          const storedOperator = window.localStorage && window.localStorage.getItem('pill-app-operator');
+          if (storedOperator) {
+            operatorInput.value = storedOperator;
+          }
+        }
         buttons.forEach((button) => {
           button.addEventListener('click', async () => {
+            const operator = operatorInput ? operatorInput.value.trim() : '';
+            if (!operator) {
+              statusEl.textContent = 'オペレーター名を入力してください';
+              operatorInput && operatorInput.focus();
+              return;
+            }
             const value = button.dataset.feedback;
             const payload = {
               comparison_id: '{{ comparison.id }}',
               is_correct: parseInt(value, 10),
+              operator,
               note: note.value || null,
             };
             button.disabled = true;
@@ -128,7 +151,7 @@
               }
               const entry = document.createElement('li');
               const symbol = payload.is_correct ? '✔' : '✖';
-              entry.textContent = `${data.created_at} : ${symbol}${payload.note ? ' - ' + payload.note : ''}`;
+              entry.textContent = `${data.created_at} : ${data.operator} : ${symbol}${payload.note ? ' - ' + payload.note : ''}`;
               if (list) {
                 if (list.children.length && list.children[0].classList.contains('muted')) {
                   list.innerHTML = '';
@@ -138,6 +161,13 @@
               statusEl.textContent = `更新しました (τ=${data.parameters.tau.toFixed(3)})`;
               window.showToast && window.showToast('即時反映済み');
               note.value = '';
+              if (operatorInput) {
+                try {
+                  window.localStorage && window.localStorage.setItem('pill-app-operator', operator);
+                } catch (error) {
+                  console.warn('failed to persist operator', error);
+                }
+              }
             } catch (error) {
               console.error(error);
               statusEl.textContent = error.message || '送信に失敗しました';
