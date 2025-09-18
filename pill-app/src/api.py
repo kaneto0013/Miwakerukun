@@ -2,17 +2,16 @@ from __future__ import annotations
 
 import html
 import logging
-import uuid
-from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
 from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.params import Query
 from fastapi.responses import HTMLResponse
-from PIL import Image, UnidentifiedImageError
+from fastapi.staticfiles import StaticFiles
 
-from . import detect, embed, feedback, schemas, signature, store, visualize
+from . import feedback, image_ops, schemas, signature, store
+from .ui.views import router as ui_router
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 RAW_DIR = BASE_DIR / "data" / "raw"
@@ -23,6 +22,8 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="pill-app")
+app.mount("/files", StaticFiles(directory=BASE_DIR), name="files")
+app.include_router(ui_router)
 
 @app.get("/health")
 def health_check() -> dict[str, str]:
@@ -36,77 +37,25 @@ def create_bag(payload: Optional[schemas.BagCreate] = Body(default=None)) -> sch
     return schemas.Bag(**bag)
 
 
+@app.get("/api/bags", response_model=list[schemas.Bag])
+def list_bags() -> list[schemas.Bag]:
+    bags = store.list_bags()
+    return [schemas.Bag(**bag) for bag in bags]
+
+
 @app.post("/api/images", response_model=schemas.Image)
 async def upload_image(
     bag_id: str = Query(..., description="Identifier of the bag that owns the image"),
     file: UploadFile = File(...),
 ) -> schemas.Image:
-    bag = store.get_bag_basic(bag_id)
-    if bag is None:
+    try:
+        return await image_ops.process_upload(bag_id, file)
+    except image_ops.BagNotFoundError:
         raise HTTPException(status_code=404, detail="Bag not found")
-
-    contents = await file.read()
-    if not contents:
+    except image_ops.EmptyUploadError:
         raise HTTPException(status_code=400, detail="Uploaded file is empty")
-
-    try:
-        pil_image = Image.open(BytesIO(contents))
-        pil_image.load()
-        width, height = pil_image.size
-    except (UnidentifiedImageError, OSError) as exc:
-        raise HTTPException(status_code=400, detail="Invalid image file") from exc
-
-    suffix = Path(file.filename or "").suffix
-    if not suffix:
-        suffix = ".png"
-    filename = f"{uuid.uuid4()}{suffix}"
-    file_path = RAW_DIR / filename
-    with open(file_path, "wb") as output:
-        output.write(contents)
-
-    relative_path = str(file_path.relative_to(BASE_DIR))
-    record = store.create_image(bag_id=bag_id, path=relative_path, width=width, height=height)
-
-    try:
-        detections, image_size = detect.detect_pills(file_path)
-    except Exception:
-        detections = []
-        image_size = (height, width)
-
-    unrecognized_regions, _ = detect.identify_unrecognized_regions(detections, image_size)
-    stored_detections = store.replace_detections(record["id"], detections)
-
-    try:
-        samples = []
-        for det in stored_detections:
-            vector = embed.embed_crop(
-                pil_image,
-                (det["x1"], det["y1"], det["x2"], det["y2"]),
-            )
-            if vector.size != embed.EMBED_DIM:
-                continue
-            area = max(0, (det["x2"] - det["x1"]) * (det["y2"] - det["y1"]))
-            samples.append(
-                {
-                    "id": str(uuid.uuid4()),
-                    "detection_id": det["id"],
-                    "embed": vector.astype("float32", copy=False).tobytes(),
-                    "size_px": float(area),
-                    "ocr_text": None,
-                }
-            )
-        if samples:
-            store.insert_samples(samples)
-    except Exception:
-        logger.exception("Failed to compute embeddings for image %s", record["id"])
-
-    visualization_path = visualize.visualization_path_for(record["id"], OUTPUT_DIR)
-    try:
-        visualize.visualize_detections(file_path, detections, unrecognized_regions, visualization_path)
-    except FileNotFoundError:
-        pass
-
-    return schemas.Image(**record)
+    except image_ops.InvalidImageError:
+        raise HTTPException(status_code=400, detail="Invalid image file")
 
 
 @app.get("/api/bags/{bag_id}", response_model=schemas.BagWithImages)
@@ -119,32 +68,22 @@ def get_bag(bag_id: str) -> schemas.BagWithImages:
 
 @app.get("/api/images/{image_id}", response_model=schemas.ImageDetections)
 def get_image_with_detections(image_id: str) -> schemas.ImageDetections:
-    image = store.get_image(image_id)
-    if image is None:
+    try:
+        return image_ops.load_image_with_detections(image_id)
+    except image_ops.ImageNotFoundError:
         raise HTTPException(status_code=404, detail="Image not found")
 
-    detections = store.list_detections(image_id)
-    image_path = BASE_DIR / image["path"]
-    image_size = (int(image["height"]), int(image["width"]))
 
-    unrecognized_regions, message = detect.identify_unrecognized_regions(detections, image_size)
-
-    visualization_path = visualize.visualization_path_for(image_id, OUTPUT_DIR)
-    if not visualization_path.exists() and image_path.exists():
-        try:
-            visualize.visualize_detections(image_path, detections, unrecognized_regions, visualization_path)
-        except FileNotFoundError:
-            pass
-
-    relative_visualization_path = str(visualization_path.relative_to(BASE_DIR))
-
-    return schemas.ImageDetections(
-        image=schemas.Image(**image),
-        detections=[schemas.Detection(**det) for det in detections],
-        visualization_path=relative_visualization_path,
-        unrecognized_regions=[schemas.RegionFlag(**region) for region in unrecognized_regions],
-        message=message,
-    )
+@app.post("/api/images/{image_id}/reanalyze", response_model=schemas.ImageDetections)
+def reanalyze_image(image_id: str) -> schemas.ImageDetections:
+    try:
+        return image_ops.reanalyze_image(image_id)
+    except image_ops.ImageNotFoundError:
+        raise HTTPException(status_code=404, detail="Image not found")
+    except image_ops.InvalidImageError:
+        raise HTTPException(status_code=400, detail="Invalid image file")
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Image file missing")
 
 
 @app.post("/api/compare", response_model=schemas.Comparison)

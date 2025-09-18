@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+{% block title %}アップロード{% endblock %}
+{% block content %}
+  <h1 class="page-title">袋と画像の登録</h1>
+  <div class="layout-columns two">
+    <section class="card">
+      <h2>1. 袋を準備</h2>
+      <p class="muted">ラベルは空でも作成できます。あとから履歴ページからも編集できます。</p>
+      <form action="{{ request.url_for('ui_create_bag') }}" method="post">
+        <label for="bag-label">袋ラベル</label>
+        <input id="bag-label" type="text" name="label" placeholder="例: 朝食セット" />
+        <button type="submit">袋を追加</button>
+      </form>
+      <hr />
+      <h3>既存の袋</h3>
+      {% if bag_cards %}
+        <div class="grid columns-3">
+          {% for bag in bag_cards %}
+            <article class="card" style="padding:1rem; box-shadow:none; border:1px solid #e5e7eb;">
+              {% if bag.preview_url %}
+                <img src="{{ bag.preview_url }}" alt="{{ bag.label }}" class="thumb" />
+              {% else %}
+                <div class="thumb" style="display:flex;align-items:center;justify-content:center;background:#f9fafb;color:#94a3b8;">No image</div>
+              {% endif %}
+              <h4 style="margin:0.8rem 0 0.2rem; font-size:1.05rem;">{{ bag.label }}</h4>
+              <p class="muted">{{ bag.image_count }} 枚 / {{ bag.created_at }}</p>
+              <a class="button-link secondary" href="{{ bag.link }}">選択</a>
+            </article>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="muted">まだ袋はありません。ラベルを入力して作成してください。</p>
+      {% endif %}
+    </section>
+    <div>
+      <section class="card">
+        <h2>2. 画像アップロード</h2>
+        {% if selected_bag %}
+          <p><strong>対象袋:</strong> {{ selected_bag.label or '(ラベル未設定)' }}<br /><span class="muted">ID: {{ selected_bag.id }}</span></p>
+          <form action="{{ request.url_for('ui_upload_images', bag_id=selected_bag.id) }}" method="post" enctype="multipart/form-data">
+            <label for="bag-files">画像ファイル (複数選択可)</label>
+            <input id="bag-files" type="file" name="files" multiple accept="image/*" />
+            <button type="submit">アップロード</button>
+          </form>
+        {% else %}
+          <p class="muted">袋を選択するとアップロードフォームが表示されます。</p>
+        {% endif %}
+      </section>
+      <section class="card">
+        <h2>3. サムネイル確認</h2>
+        {% if image_cards %}
+          <div class="grid columns-3">
+            {% for image in image_cards %}
+              <article style="border:1px solid #e5e7eb; border-radius:12px; padding:0.75rem;">
+                {% if image.raw_url %}
+                  <a href="{{ image.detail_url }}">
+                    <img src="{{ image.raw_url }}" alt="{{ image.id }}" class="thumb" style="height:140px;" />
+                  </a>
+                {% else %}
+                  <div class="thumb" style="display:flex;align-items:center;justify-content:center;background:#f9fafb;color:#94a3b8;height:140px;">no image</div>
+                {% endif %}
+                <p class="muted" style="margin:0.5rem 0 0;">{{ image.id }}<br />{{ image.created_at }}</p>
+                <div class="chips">
+                  <a class="button-link secondary" href="{{ image.detail_url }}">詳細</a>
+                  {% if image.visualization_url %}
+                    <a class="button-link secondary" href="{{ image.visualization_url }}" target="_blank">検出PNG</a>
+                  {% endif %}
+                </div>
+              </article>
+            {% endfor %}
+          </div>
+        {% else %}
+          <p class="muted">サムネイルはここに表示されます。画像をアップロードしてください。</p>
+        {% endif %}
+      </section>
+    </div>
+  </div>
+{% endblock %}
